@@ -1,5 +1,8 @@
 {
   "name": "jetstack-automations",
   "version": "1.0.0",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@notionhq/client": "^2.2.15"
+  }
 }
