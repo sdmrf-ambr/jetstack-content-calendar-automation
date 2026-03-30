@@ -1,0 +1,28 @@
+name: JetStack Daily Calendar Briefing
+
+on:
+  schedule:
+    - cron: '30 3 * * 1-5'  # 9:00 AM IST Monday-Friday (UTC+5:30)
+  workflow_dispatch:         # allows manual trigger from GitHub UI
+
+jobs:
+  send-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install @notionhq/client node-fetch
+
+      - name: Run briefing script
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node scripts/briefing.js
