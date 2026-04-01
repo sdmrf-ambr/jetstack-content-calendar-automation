@@ -97,11 +97,54 @@ function isImageUrl(url) {
   return (
     url.includes('drive.google.com') ||
     url.includes('dropbox.com') ||
-    url.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)
+    Boolean(url.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i))
   );
 }
 
+// Build blocks for a single post
+function buildPostBlock(p, showCopyLink = false) {
+  const title = getProp(p, 'Post Title');
+  const publishDate = getProp(p, 'Publish Date');
+  const visualDueDate = getProp(p, 'Visual Due Date');
+  const status = getProp(p, 'Status');
+  const format = getProp(p, 'Post Format');
+  const platform = getProp(p, 'Platform');
+  const assetLink = getProp(p, 'Asset Link');
+  const backupPost = getProp(p, 'Backup Post');
+  const pageUrl = p.url;
+  const imageUrl = normalizeImageUrl(assetLink);
+  const postBlocks = [];
+
+  let text = `${getFormatEmoji(format)} *<${pageUrl}|${title}>*\n`;
+  text += `${getStatusEmoji(status)} ${status}  ·  🖥️ ${platform || 'LinkedIn'}\n`;
+  text += `📅 Publish: *${formatDateShort(publishDate)}*`;
+  if (visualDueDate) text += `  ·  🎨 Visual due: *${formatDateShort(visualDueDate)}*`;
+  if (assetLink && !isImageUrl(assetLink)) text += `\n🔗 <${assetLink}|View asset>`;
+  if (backupPost) text += `\n⚠️ Backup: ${backupPost}`;
+
+  postBlocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+
+  // Show image inline if asset link is an image
+  if (imageUrl && isImageUrl(assetLink)) {
+    postBlocks.push({ type: 'image', image_url: imageUrl, alt_text: title });
+  }
+
+  // Show copy link for today and tomorrow
+  if (showCopyLink) {
+    postBlocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `📋 <${pageUrl}|Open Notion page for LinkedIn copy>\n_Update status: open page → change Status field_`,
+      },
+    });
+  }
+
+  return postBlocks;
+}
+
 async function main() {
+  const yesterday = getDateString(-1);
   const today = getDateString(0);
   const tomorrow = getDateString(1);
   const dayAfter = getDateString(2);
@@ -110,28 +153,36 @@ async function main() {
   const data = await notionQuery(DATABASE_ID);
   const allPosts = data.results.filter(p => getProp(p, 'Publish Date') !== null);
 
-  // Posts going live today
+  // Yesterday's posts — check if they went live
+  const yesterdayPosts = allPosts.filter(p => {
+    const date = getProp(p, 'Publish Date');
+    const status = getProp(p, 'Status');
+    // Flag any post from yesterday that is NOT marked Live
+    return date === yesterday && status !== 'Live';
+  });
+
+  // Today's posts — Ready to Schedule OR Scheduled
   const todayPosts = allPosts.filter(p => {
     const date = getProp(p, 'Publish Date');
     const status = getProp(p, 'Status');
-    return date === today && status === 'Scheduled';
+    return date === today && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
-  // Posts scheduled for tomorrow
+  // Tomorrow's posts
   const tomorrowPosts = allPosts.filter(p => {
     const date = getProp(p, 'Publish Date');
     const status = getProp(p, 'Status');
     return date === tomorrow && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
-  // Posts scheduled for day after tomorrow
+  // Day after tomorrow
   const dayAfterPosts = allPosts.filter(p => {
     const date = getProp(p, 'Publish Date');
     const status = getProp(p, 'Status');
     return date === dayAfter && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
-  // Posts behind schedule — due within 7 days but not ready
+  // Behind schedule — due within 7 days but not ready
   const behindPosts = allPosts.filter(p => {
     const date = getProp(p, 'Publish Date');
     const status = getProp(p, 'Status');
@@ -139,8 +190,12 @@ async function main() {
       ['Idea', 'Script / Copy in progress', 'Visual in progress'].includes(status);
   });
 
-  const hasContent = todayPosts.length > 0 || tomorrowPosts.length > 0 ||
-    dayAfterPosts.length > 0 || behindPosts.length > 0;
+  const hasContent =
+    yesterdayPosts.length > 0 ||
+    todayPosts.length > 0 ||
+    tomorrowPosts.length > 0 ||
+    dayAfterPosts.length > 0 ||
+    behindPosts.length > 0;
 
   if (!hasContent) {
     console.log('Nothing to report. No briefing sent.');
@@ -162,47 +217,29 @@ async function main() {
 
   blocks.push({ type: 'divider' });
 
-  // Helper to build a post block with visual due date and copy
-  function buildPostBlock(p, showCopy = false) {
-    const title = getProp(p, 'Post Title');
-    const publishDate = getProp(p, 'Publish Date');
-    const visualDueDate = getProp(p, 'Visual Due Date');
-    const status = getProp(p, 'Status');
-    const format = getProp(p, 'Post Format');
-    const platform = getProp(p, 'Platform');
-    const assetLink = getProp(p, 'Asset Link');
-    const backupPost = getProp(p, 'Backup Post');
-    const pageUrl = p.url;
-    const imageUrl = normalizeImageUrl(assetLink);
-    const postBlocks = [];
+  // YESTERDAY CHECK
+  if (yesterdayPosts.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🔍 Yesterday — did this go live?*' },
+    });
 
-    let text = `${getFormatEmoji(format)} *<${pageUrl}|${title}>*\n`;
-    text += `${getStatusEmoji(status)} ${status}  ·  🖥️ ${platform || 'LinkedIn'}\n`;
-    text += `📅 Publish: *${formatDateShort(publishDate)}*`;
-    if (visualDueDate) text += `  ·  🎨 Visual due: *${formatDateShort(visualDueDate)}*`;
-    if (assetLink && !isImageUrl(assetLink)) text += `\n🔗 <${assetLink}|View asset>`;
-    if (backupPost) text += `\n⚠️ Backup: ${backupPost}`;
+    yesterdayPosts.forEach(p => {
+      const title = getProp(p, 'Post Title');
+      const status = getProp(p, 'Status');
+      const format = getProp(p, 'Post Format');
+      const platform = getProp(p, 'Platform');
+      const pageUrl = p.url;
 
-    postBlocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+      const text =
+        `${getFormatEmoji(format)} *<${pageUrl}|${title}>*\n` +
+        `${getStatusEmoji(status)} Current status: *${status}*  ·  🖥️ ${platform || 'LinkedIn'}\n` +
+        `_If live: open page in Notion and mark status as *Live*_`;
 
-    // Show image if asset link is an image
-    if (imageUrl && isImageUrl(assetLink)) {
-      postBlocks.push({ type: 'image', image_url: imageUrl, alt_text: title });
-    }
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+    });
 
-    // Show LinkedIn copy for today's posts
-    if (showCopy) {
-      // We surface the page link prominently since full copy lives in the page body
-      postBlocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `📋 *LinkedIn copy is in the Notion page.*\n👉 <${pageUrl}|Open page to copy caption>\n\n_To update status: open the page in Notion and change the Status field._`,
-        },
-      });
-    }
-
-    return postBlocks;
+    blocks.push({ type: 'divider' });
   }
 
   // TODAY
@@ -211,10 +248,25 @@ async function main() {
       type: 'section',
       text: { type: 'mrkdwn', text: '*🚀 Going live today*' },
     });
+
     todayPosts.forEach(p => {
       buildPostBlock(p, true).forEach(b => blocks.push(b));
     });
+
     blocks.push({ type: 'divider' });
+  }
+
+  // TODAY — nothing scheduled warning
+  if (todayPosts.length === 0 && yesterdayPosts.length === 0) {
+    // Only show "nothing today" if it's a posting day (Mon/Wed/Fri)
+    const dayOfWeek = new Date().getDay(); // 0=Sun, 1=Mon, 3=Wed, 5=Fri
+    if ([1, 3, 5].includes(dayOfWeek)) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*⚠️ Nothing scheduled for today*\nCheck the calendar — a post may be missing or not yet set to Scheduled.` },
+      });
+      blocks.push({ type: 'divider' });
+    }
   }
 
   // TOMORROW
@@ -223,9 +275,11 @@ async function main() {
       type: 'section',
       text: { type: 'mrkdwn', text: `*📆 Tomorrow — ${formatDateShort(tomorrow)}*` },
     });
+
     tomorrowPosts.forEach(p => {
       buildPostBlock(p, true).forEach(b => blocks.push(b));
     });
+
     blocks.push({ type: 'divider' });
   }
 
@@ -235,9 +289,11 @@ async function main() {
       type: 'section',
       text: { type: 'mrkdwn', text: `*📆 ${formatDateShort(dayAfter)}*` },
     });
+
     dayAfterPosts.forEach(p => {
       buildPostBlock(p, false).forEach(b => blocks.push(b));
     });
+
     blocks.push({ type: 'divider' });
   }
 
@@ -282,7 +338,7 @@ async function main() {
   });
 
   await sendToSlack(blocks);
-  console.log(`Briefing sent. Today: ${todayPosts.length}. Tomorrow: ${tomorrowPosts.length}. Day after: ${dayAfterPosts.length}. Behind: ${behindPosts.length}.`);
+  console.log(`Briefing sent. Yesterday check: ${yesterdayPosts.length}. Today: ${todayPosts.length}. Tomorrow: ${tomorrowPosts.length}. Day after: ${dayAfterPosts.length}. Behind: ${behindPosts.length}.`);
 }
 
 main().catch(err => {
