@@ -72,16 +72,35 @@ function getFormatEmoji(format) {
   return map[format] || '📄';
 }
 
+function getPlatformEmoji(platform) {
+  const map = {
+    'LinkedIn': '💼',
+    'Twitter/X': '🐦',
+    'Pinterest': '📌',
+    'YouTube': '▶️',
+    'Dev.to': '👨‍💻',
+    'Tumblr': '📓',
+    'Hashnode': '🔷',
+  };
+  return map[platform] || '🌐';
+}
+
 function getProp(page, name) {
   const prop = page.properties[name];
   if (!prop) return null;
   if (prop.type === 'title') return prop.title?.[0]?.plain_text || null;
   if (prop.type === 'select') return prop.select?.name || null;
-  if (prop.type === 'multi_select') return prop.multi_select?.map(o => o.name).join(', ') || null;
+  if (prop.type === 'multi_select') return prop.multi_select?.map(o => o.name) || [];
   if (prop.type === 'date') return prop.date?.start || null;
   if (prop.type === 'url') return prop.url || null;
   if (prop.type === 'rich_text') return prop.rich_text?.[0]?.plain_text || null;
   return null;
+}
+
+function getPropString(page, name) {
+  const val = getProp(page, name);
+  if (Array.isArray(val)) return val.join(', ');
+  return val;
 }
 
 function normalizeImageUrl(url) {
@@ -101,31 +120,45 @@ function isImageUrl(url) {
   );
 }
 
-// Build blocks for a single post
-function buildPostBlock(p, showCopyLink = false) {
-  const title = getProp(p, 'Post Title');
-  const publishDate = getProp(p, 'Publish Date');
-  const visualDueDate = getProp(p, 'Visual Due Date');
-  const status = getProp(p, 'Status');
-  const format = getProp(p, 'Post Format');
-  const platform = getProp(p, 'Platform');
-  const assetLink = getProp(p, 'Asset Link');
-  const backupPost = getProp(p, 'Backup Post');
-  const pageUrl = p.url;
+// Expand one Notion row into one entry per platform
+function expandByPlatform(page) {
+  const platforms = getProp(page, 'Platform');
+  const platformList = Array.isArray(platforms) && platforms.length > 0
+    ? platforms
+    : ['LinkedIn'];
+
+  return platformList.map(platform => ({ page, platform }));
+}
+
+// Build Slack blocks for a single platform entry
+function buildPlatformBlock(page, platform, showCopyLink = false) {
+  const title = getPropString(page, 'Post Title');
+  const publishDate = getPropString(page, 'Publish Date');
+  const visualDueDate = getPropString(page, 'Visual Due Date');
+  const status = getPropString(page, 'Status');
+  const format = getPropString(page, 'Post Format');
+  const assetLink = getPropString(page, 'Asset Link');
+  const backupPost = getPropString(page, 'Backup Post');
+  const pageUrl = page.url;
   const imageUrl = normalizeImageUrl(assetLink);
   const postBlocks = [];
 
-  let text = `${getFormatEmoji(format)} *<${pageUrl}|${title}>*\n`;
-  text += `${getStatusEmoji(status)} ${status}  ·  🖥️ ${platform || 'LinkedIn'}\n`;
-  text += `📅 Publish: *${formatDateShort(publishDate)}*`;
-  if (visualDueDate) text += `  ·  🎨 Visual due: *${formatDateShort(visualDueDate)}*`;
+  const platformEmoji = getPlatformEmoji(platform);
+  const formatEmoji = getFormatEmoji(format);
+  const statusEmoji = getStatusEmoji(status);
+
+  let text = `${platformEmoji} *${platform}*  ·  ${formatEmoji} ${format}\n`;
+  text += `*<${pageUrl}|${title}>*\n`;
+  text += `${statusEmoji} ${status}`;
+  text += `  ·  📅 *${formatDateShort(publishDate)}*`;
+  if (visualDueDate) text += `  ·  🎨 Visual: *${formatDateShort(visualDueDate)}*`;
   if (assetLink && !isImageUrl(assetLink)) text += `\n🔗 <${assetLink}|View asset>`;
   if (backupPost) text += `\n⚠️ Backup: ${backupPost}`;
 
   postBlocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
 
-  // Show image inline if asset link is an image
-  if (imageUrl && isImageUrl(assetLink)) {
+  // Show image inline for today and tomorrow on LinkedIn
+  if (platform === 'LinkedIn' && imageUrl && isImageUrl(assetLink)) {
     postBlocks.push({ type: 'image', image_url: imageUrl, alt_text: title });
   }
 
@@ -135,7 +168,7 @@ function buildPostBlock(p, showCopyLink = false) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `📋 <${pageUrl}|Open Notion page for LinkedIn copy>\n_Update status: open page → change Status field_`,
+        text: `📋 <${pageUrl}|Open Notion for ${platform} copy>  ·  _Update status in the page_`,
       },
     });
   }
@@ -151,41 +184,40 @@ async function main() {
   const in7d = getDateString(7);
 
   const data = await notionQuery(DATABASE_ID);
-  const allPosts = data.results.filter(p => getProp(p, 'Publish Date') !== null);
+  const allPosts = data.results.filter(p => getPropString(p, 'Publish Date') !== null);
 
-  // Yesterday's posts — check if they went live
+  // Yesterday's posts not marked Live
   const yesterdayPosts = allPosts.filter(p => {
-    const date = getProp(p, 'Publish Date');
-    const status = getProp(p, 'Status');
-    // Flag any post from yesterday that is NOT marked Live
+    const date = getPropString(p, 'Publish Date');
+    const status = getPropString(p, 'Status');
     return date === yesterday && status !== 'Live';
   });
 
-  // Today's posts — Ready to Schedule OR Scheduled
+  // Today's posts
   const todayPosts = allPosts.filter(p => {
-    const date = getProp(p, 'Publish Date');
-    const status = getProp(p, 'Status');
+    const date = getPropString(p, 'Publish Date');
+    const status = getPropString(p, 'Status');
     return date === today && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
   // Tomorrow's posts
   const tomorrowPosts = allPosts.filter(p => {
-    const date = getProp(p, 'Publish Date');
-    const status = getProp(p, 'Status');
+    const date = getPropString(p, 'Publish Date');
+    const status = getPropString(p, 'Status');
     return date === tomorrow && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
   // Day after tomorrow
   const dayAfterPosts = allPosts.filter(p => {
-    const date = getProp(p, 'Publish Date');
-    const status = getProp(p, 'Status');
+    const date = getPropString(p, 'Publish Date');
+    const status = getPropString(p, 'Status');
     return date === dayAfter && ['Ready to Schedule', 'Scheduled'].includes(status);
   });
 
-  // Behind schedule — due within 7 days but not ready
+  // Behind schedule
   const behindPosts = allPosts.filter(p => {
-    const date = getProp(p, 'Publish Date');
-    const status = getProp(p, 'Status');
+    const date = getPropString(p, 'Publish Date');
+    const status = getPropString(p, 'Status');
     return date >= today && date <= in7d &&
       ['Idea', 'Script / Copy in progress', 'Visual in progress'].includes(status);
   });
@@ -221,22 +253,26 @@ async function main() {
   if (yesterdayPosts.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '*🔍 Yesterday — did this go live?*' },
+      text: { type: 'mrkdwn', text: '*🔍 Yesterday — did these go live?*' },
     });
 
     yesterdayPosts.forEach(p => {
-      const title = getProp(p, 'Post Title');
-      const status = getProp(p, 'Status');
-      const format = getProp(p, 'Post Format');
-      const platform = getProp(p, 'Platform');
-      const pageUrl = p.url;
+      const entries = expandByPlatform(p);
+      entries.forEach(({ page, platform }) => {
+        const title = getPropString(page, 'Post Title');
+        const status = getPropString(page, 'Status');
+        const format = getPropString(page, 'Post Format');
+        const pageUrl = page.url;
+        const platformEmoji = getPlatformEmoji(platform);
 
-      const text =
-        `${getFormatEmoji(format)} *<${pageUrl}|${title}>*\n` +
-        `${getStatusEmoji(status)} Current status: *${status}*  ·  🖥️ ${platform || 'LinkedIn'}\n` +
-        `_If live: open page in Notion and mark status as *Live*_`;
+        const text =
+          `${platformEmoji} *${platform}*  ·  ${getFormatEmoji(format)} ${format}\n` +
+          `*<${pageUrl}|${title}>*\n` +
+          `${getStatusEmoji(status)} Current status: *${status}*\n` +
+          `_If live: open page in Notion → mark as *Live*_`;
 
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+      });
     });
 
     blocks.push({ type: 'divider' });
@@ -250,20 +286,22 @@ async function main() {
     });
 
     todayPosts.forEach(p => {
-      buildPostBlock(p, true).forEach(b => blocks.push(b));
+      const entries = expandByPlatform(p);
+      entries.forEach(({ page, platform }) => {
+        buildPlatformBlock(page, platform, true).forEach(b => blocks.push(b));
+      });
     });
 
     blocks.push({ type: 'divider' });
   }
 
-  // TODAY — nothing scheduled warning
+  // No posts today warning on posting days
   if (todayPosts.length === 0 && yesterdayPosts.length === 0) {
-    // Only show "nothing today" if it's a posting day (Mon/Wed/Fri)
-    const dayOfWeek = new Date().getDay(); // 0=Sun, 1=Mon, 3=Wed, 5=Fri
+    const dayOfWeek = new Date().getDay();
     if ([1, 3, 5].includes(dayOfWeek)) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `*⚠️ Nothing scheduled for today*\nCheck the calendar — a post may be missing or not yet set to Scheduled.` },
+        text: { type: 'mrkdwn', text: `*⚠️ Nothing scheduled for today*\nCheck the calendar — a post may be missing or not yet Scheduled.` },
       });
       blocks.push({ type: 'divider' });
     }
@@ -277,7 +315,10 @@ async function main() {
     });
 
     tomorrowPosts.forEach(p => {
-      buildPostBlock(p, true).forEach(b => blocks.push(b));
+      const entries = expandByPlatform(p);
+      entries.forEach(({ page, platform }) => {
+        buildPlatformBlock(page, platform, true).forEach(b => blocks.push(b));
+      });
     });
 
     blocks.push({ type: 'divider' });
@@ -291,7 +332,10 @@ async function main() {
     });
 
     dayAfterPosts.forEach(p => {
-      buildPostBlock(p, false).forEach(b => blocks.push(b));
+      const entries = expandByPlatform(p);
+      entries.forEach(({ page, platform }) => {
+        buildPlatformBlock(page, platform, false).forEach(b => blocks.push(b));
+      });
     });
 
     blocks.push({ type: 'divider' });
@@ -305,11 +349,15 @@ async function main() {
     });
 
     behindPosts.forEach(p => {
-      const title = getProp(p, 'Post Title');
-      const date = getProp(p, 'Publish Date');
-      const visualDueDate = getProp(p, 'Visual Due Date');
-      const status = getProp(p, 'Status');
-      const format = getProp(p, 'Post Format');
+      const title = getPropString(p, 'Post Title');
+      const date = getPropString(p, 'Publish Date');
+      const visualDueDate = getPropString(p, 'Visual Due Date');
+      const status = getPropString(p, 'Status');
+      const format = getPropString(p, 'Post Format');
+      const platforms = getProp(p, 'Platform');
+      const platformList = Array.isArray(platforms) && platforms.length > 0
+        ? platforms.map(pl => `${getPlatformEmoji(pl)} ${pl}`).join('  ·  ')
+        : '💼 LinkedIn';
       const pageUrl = p.url;
 
       const daysUntil = Math.ceil(
@@ -319,6 +367,7 @@ async function main() {
 
       let text = `${urgency} *<${pageUrl}|${title}>*\n`;
       text += `${getStatusEmoji(status)} ${status}  ·  ${getFormatEmoji(format)} ${format}\n`;
+      text += `${platformList}\n`;
       text += `📅 Publish: *${formatDateShort(date)}* (${daysUntil}d away)`;
       if (visualDueDate) text += `  ·  🎨 Visual due: *${formatDateShort(visualDueDate)}*`;
 
@@ -338,7 +387,7 @@ async function main() {
   });
 
   await sendToSlack(blocks);
-  console.log(`Briefing sent. Yesterday check: ${yesterdayPosts.length}. Today: ${todayPosts.length}. Tomorrow: ${tomorrowPosts.length}. Day after: ${dayAfterPosts.length}. Behind: ${behindPosts.length}.`);
+  console.log(`Briefing sent. Yesterday: ${yesterdayPosts.length}. Today: ${todayPosts.length}. Tomorrow: ${tomorrowPosts.length}. Day after: ${dayAfterPosts.length}. Behind: ${behindPosts.length}.`);
 }
 
 main().catch(err => {
